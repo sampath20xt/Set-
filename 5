@@ -1,0 +1,63 @@
+import os
+import pandas as pd
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import pinecone
+from langchain.vectorstores import Pinecone
+from langchain.chat_models import ChatGroq
+from langchain.schema import Document
+
+# Set API Keys
+os.environ["GOOGLE_API_KEY"] = "your_google_api_key"
+os.environ["PINECONE_API_KEY"] = "your_pinecone_api_key"
+os.environ["GROQ_API_KEY"] = "your_groq_api_key"
+
+# Load CSV Data
+csv_file_path = "your_data.csv"
+df = pd.read_csv(csv_file_path)
+
+# Combine all text into a single column if needed
+text_data = df.apply(lambda row: " ".join(row.astype(str)), axis=1).tolist()
+
+# Split text into chunks
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+documents = [Document(page_content=text) for text in text_data]
+chunks = text_splitter.split_documents(documents)
+
+# Initialize Google Gemini Embeddings
+embedding_model = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+
+# Initialize Pinecone
+pinecone.init(api_key=os.environ["PINECONE_API_KEY"], environment="us-west1-gcp")
+
+# Create a new Pinecone index if not exists
+index_name = "rag-index"
+if index_name not in pinecone.list_indexes():
+    pinecone.create_index(index_name, dimension=768, metric="cosine")  # Adjust dim if needed
+
+# Store embeddings in Pinecone
+vector_store = Pinecone.from_documents(chunks, embedding_model, index_name=index_name)
+
+# Load Chat Model (Groq Llama-3.3-70B)
+chat_model = ChatGroq(model_name="llama-3.3-70b-versatile", api_key=os.environ["GROQ_API_KEY"])
+
+def retrieve_and_generate_response(user_query):
+    """Retrieve relevant documents and generate a response."""
+    # Generate query embedding
+    query_embedding = embedding_model.embed_query(user_query)
+
+    # Search Pinecone for relevant chunks
+    search_results = vector_store.similarity_search_by_vector(query_embedding, k=5)
+    
+    # Retrieve relevant text
+    retrieved_text = "\n\n".join([doc.page_content for doc in search_results])
+
+    # Generate response using Groq AI
+    response = chat_model.invoke(f"Based on the following relevant information, answer the query:\n\n{retrieved_text}\n\nQuery: {user_query}")
+    
+    return response.content
+
+# Example Query
+user_input = "What are the key findings in the data?"
+response = retrieve_and_generate_response(user_input)
+print(response)
