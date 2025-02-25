@@ -1,0 +1,77 @@
+import os
+import pandas as pd
+from pymongo import MongoClient
+from langchain_groq import ChatGroq
+from dotenv import load_dotenv, find_dotenv
+
+# Load environment variables
+load_dotenv(find_dotenv())
+
+# Set API Keys
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# Connect to MongoDB
+MONGO_URI = "mongodb://localhost:27017/"  # Change this to your MongoDB connection string
+client = MongoClient(MONGO_URI)
+db = client["inventory_db"]  # Database name
+collection = db["inventory"]  # Collection name
+
+# **🔹 Step 1: Load CSV and Insert Data into MongoDB**
+csv_file_path = "Data/inventory.csv"
+df = pd.read_csv(csv_file_path)
+
+# Convert DataFrame to Dictionary for MongoDB
+records = df.to_dict(orient="records")
+
+# Insert Data into MongoDB (only if empty)
+if collection.count_documents({}) == 0:
+    collection.insert_many(records)
+    print("✅ Inventory data successfully stored in MongoDB.")
+else:
+    print("✅ Inventory data already exists in MongoDB. Skipping insertion.")
+
+# Load Chat Model (Groq Llama-3.3-70B)
+chat_model = ChatGroq(model_name="llama-3.3-70b-versatile", api_key=GROQ_API_KEY)
+
+def retrieve_and_generate_response(user_query):
+    """Retrieve relevant inventory data from MongoDB and generate a response."""
+    print(f"\n🔍 Received User Query: {user_query}")
+
+    # **🔹 Step 2: Use LLM to Convert User Query into a MongoDB Query**
+    prompt = f"""
+    You are an AI assistant that converts natural language queries into MongoDB queries.
+    Convert the following user query into a MongoDB filter:
+
+    User Query: "{user_query}"
+
+    Example output format:
+    {{"Warehouse": "Riverside"}}
+    """
+    structured_query = chat_model.invoke(prompt).content.strip()
+
+    print(f"✅ MongoDB Query: {structured_query}")
+
+    # **🔹 Step 3: Execute Query in MongoDB**
+    try:
+        query_dict = eval(structured_query)  # Convert string to dictionary
+        results = list(collection.find(query_dict, {"_id": 0}))  # Exclude MongoDB "_id" field
+    except Exception as e:
+        return f"⚠️ Error in query execution: {e}"
+
+    if not results:
+        return "⚠️ No relevant information found. Try rephrasing the query."
+
+    # Convert MongoDB results into structured text for LLM response
+    retrieved_text = "\n".join([str(record) for record in results])
+
+    print("\n💡 Generating response from Llama-3.3-70B...")
+    response = chat_model.invoke(
+        f"Based on the following inventory data, answer the query:\n\n{retrieved_text}\n\nQuery: {user_query}"
+    )
+
+    return response.content
+
+# **🔹 Example User Query**
+user_input = "What are the product names for warehouse Riverside?"
+response = retrieve_and_generate_response(user_input)
+print("\n🤖 AI Response:", response)
